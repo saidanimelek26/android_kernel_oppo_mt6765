@@ -1,4 +1,4 @@
-name: Build MTK Kernel + Flashable ZIP
+name: Build MT6765 Kernel + AnyKernel3 Zip
 
 on:
   push:
@@ -9,30 +9,17 @@ jobs:
     runs-on: ubuntu-22.04
 
     steps:
-    # -----------------------------
-    # Checkout
-    # -----------------------------
-    - name: 📥 Checkout source
+    - name: 📥 Checkout repository
       uses: actions/checkout@v4
 
-    # -----------------------------
-    # Debug kernel folder (IMPORTANT)
-    # -----------------------------
-    - name: 🔍 Debug repo structure
+    - name: 📂 Debug repo structure
       run: |
-        echo "Root:"
+        echo "ROOT:"
         ls -R
-
-        echo "Kernel folder:"
+        echo "kernel folder content:"
         ls -R kernel || true
 
-        echo "Kernel Makefile:"
-        ls kernel/Makefile || true
-
-    # -----------------------------
-    # Install dependencies
-    # -----------------------------
-    - name: 🧰 Install packages
+    - name: 🧰 Install build dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y \
@@ -40,51 +27,29 @@ jobs:
           libncurses-dev libssl-dev lld llvm make python3 \
           unzip wget xz-utils zip cpio
 
-    # -----------------------------
-    # Fix python
-    # -----------------------------
-    - name: 🔗 Fix python
+    - name: 🔗 Ensure python link
       run: |
         if [ ! -e /usr/bin/python ]; then
           sudo ln -s /usr/bin/python3 /usr/bin/python
         fi
 
-    # -----------------------------
-    # Toolchains
-    # -----------------------------
     - name: ⬇️ Download toolchains
       run: |
         git clone --depth=1 https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b android11-release gcc-4.9
-        
         wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android10-dev/clang-r353983c.tar.gz -O clang.tar.gz
-        
         mkdir clang
         tar -xf clang.tar.gz -C clang
 
-    # -----------------------------
-    # Setup PATH
-    # -----------------------------
-    - name: ⚙️ Setup PATH
+    - name: ⚙️ Set PATH for toolchains
       run: |
         echo "PATH=$(pwd)/gcc-4.9/bin:$(pwd)/clang/bin:$PATH" >> $GITHUB_ENV
 
-    # -----------------------------
-    # Build Kernel
-    # -----------------------------
     - name: 🏗️ Build Kernel
       run: |
         cd kernel
         mkdir -p out
-
-        # Clean (mrproper may fail on some kernels)
-        make O=out ARCH=arm64 clean || true
-
-        # Defconfig
         make O=out ARCH=arm64 k65v1_64_bsp_defconfig
-
         make O=out ARCH=arm64 olddefconfig
-
-        # Build
         make -j$(nproc --all) \
           ARCH=arm64 \
           O=out \
@@ -93,81 +58,38 @@ jobs:
           CLANG_TRIPLE=aarch64-linux-gnu- \
           Image.gz dtbs
 
-    # -----------------------------
-    # Verify output
-    # -----------------------------
-    - name: ✅ Verify build
+    - name: 📌 Verify build output
       run: |
         if [ -f "kernel/out/arch/arm64/boot/Image.gz-dtb" ]; then
-          echo "✅ Image.gz-dtb found"
-        elif [ -f "kernel/out/arch/arm64/boot/Image.gz" ]; then
-          echo "⚠️ Only Image.gz found"
+          echo "✅ Build successful"
         else
-          echo "❌ Kernel build failed"
+          echo "❌ Build failed"
           exit 1
         fi
 
-    # -----------------------------
-    # List output
-    # -----------------------------
-    - name: 📂 Show build output
+    - name: 📦 Prepare AnyKernel3
       run: |
-        ls -R kernel/out/arch/arm64/boot/
-
-    # -----------------------------
-    # Prepare AnyKernel3
-    # -----------------------------
-    - name: 📦 Prepare flashable files
-      run: |
-        set -e
         mkdir -p artifact
-
-        # Copy kernel
-        if [ -f "kernel/out/arch/arm64/boot/Image.gz-dtb" ]; then
-          cp kernel/out/arch/arm64/boot/Image.gz-dtb artifact/zImage
-        else
-          cp kernel/out/arch/arm64/boot/Image.gz artifact/zImage
-        fi
-
-        # Kernel version
+        cp kernel/out/arch/arm64/boot/Image.gz-dtb artifact/zImage
         cd kernel
-        KVER=$(awk '
-          /^VERSION =/ {v=$3}
-          /^PATCHLEVEL =/ {p=$3}
-          /^SUBLEVEL =/ {s=$3}
-          END {print v"."p"."s}
-        ' Makefile)
-
+        KVER=$(awk '/^VERSION =/ {v=$3} /^PATCHLEVEL =/ {p=$3} /^SUBLEVEL =/ {s=$3} END {print v"."p"."s}' Makefile)
         cd $GITHUB_WORKSPACE
         echo "KVER=$KVER" >> $GITHUB_ENV
-
-        # Clone AnyKernel3
         git clone --depth=1 https://github.com/NyxNoirXD/AnyKernel3.git ak
-
-        # Copy files
         cp -r ak/* artifact/
         rm -rf artifact/.git
 
-    # -----------------------------
-    # Configure AnyKernel3
-    # -----------------------------
     - name: ⚙️ Configure AnyKernel3
       run: |
         sed -i 's|block=.*|block=/dev/block/by-name/boot|g' artifact/anykernel.sh
         sed -i 's|is_slot_device=.*|is_slot_device=0|g' artifact/anykernel.sh
 
-    # -----------------------------
-    # Create ZIP
-    # -----------------------------
     - name: 🧩 Create flashable zip
       run: |
         cd artifact
         zip -r ../lunacore-${{ env.KVER }}.zip *
 
-    # -----------------------------
-    # Upload artifact
-    # -----------------------------
-    - name: 📤 Upload ZIP
+    - name: 📤 Upload flashable zip
       uses: actions/upload-artifact@v4
       with:
         name: lunacore-${{ env.KVER }}
